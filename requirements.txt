@@ -1,2 +1,7 @@
 aiohttp
+
 # Optional: install transformers and torch for BitNet inference
+# Uncomment the following lines if you want to use BitNet model locally:
+# transformers>=4.30.0
+# torch>=2.0.0
+# accelerate>=0.20.0
