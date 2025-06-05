@@ -1,1 +1,2 @@
 aiohttp
+# Optional: install transformers and torch for BitNet inference
