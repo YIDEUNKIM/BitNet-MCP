@@ -4,7 +4,7 @@ import signal
 import platform
 import argparse
 import subprocess
-import mcp_client
+
 
 def run_command(command, shell=False):
     """Run a system command and ensure it succeeds."""
@@ -22,7 +22,7 @@ def run_inference():
             main_path = os.path.join(build_dir, "bin", "llama-cli")
     else:
         main_path = os.path.join(build_dir, "bin", "llama-cli")
-        
+
     command = [
         f'{main_path}',
         '-m', args.model,
