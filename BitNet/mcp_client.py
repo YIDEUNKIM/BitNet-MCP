@@ -4,8 +4,24 @@ import os
 import platform
 import json
 import asyncio
+from dataclasses import dataclass, field
+from typing import List, Dict, Any, Optional
+
 from fastmcp import Client
 from fastmcp.exceptions import ClientError, ToolError, NotFoundError
+
+# 3. 설정 관리 개선
+@dataclass
+class AppConfig:
+    """애플리케이션 설정을 관리하는 데이터 클래스"""
+    server_url: str = "http://localhost:8001/sse"
+    default_model_path: str = "./models/BitNet-b1.58-2B-4T/ggml-model-i2_s.gguf"
+    default_n_predict: int = 256
+    default_threads: int = 8
+    default_ctx_size: int = 2048
+    default_temperature: float = 0.8
+    default_n_gpu_layers: int = 0
+    default_system_prompt: str = "You are a helpful AI agent assistant."
 
 def get_llama_cli_path():
     """
@@ -27,8 +43,14 @@ def query_local_llm(prompt: str, args) -> str:
     """
     llama-cli를 서브프로세스로 호출하여 로컬 LLM의 응답을 받아옵니다.
     """
+    # 디버깅: LLM에 전달되는 프롬프트 출력
+    print("\n[DEBUG] --- LLM Prompt ---")
+    print(prompt)
+    print("---------------------------")
+
     try:
         llama_cli_path = get_llama_cli_path()
+
         command = [
             f'{llama_cli_path}',
             '-m', args.model,
@@ -56,75 +78,71 @@ def query_local_llm(prompt: str, args) -> str:
     except FileNotFoundError as e:
         return str(e)
     except subprocess.CalledProcessError as e:
-        error_message = f"LLM 호출 중 오류 발생:\n{e.stderr}"
+        error_message = f"LLM 호출 중 오류 발생:\n"
         print(error_message)
         return ""
 
-async def list_server_tools(server_url):
+async def list_server_tools(server_url: str) -> Optional[List[Any]]:
     """서버에서 사용 가능한 도구 목록을 가져옵니다."""
     try:
         async with Client(server_url) as client:
             tools = await client.list_tools()
-            print(f"서버에서 사용 가능한 도구: {[tool.name for tool in tools]}")
             return tools
     except Exception as e:
         print(f"도구 목록을 가져오는데 실패했습니다: {e}")
-        return []
+        return None
 
-async def query_mcp_server(command_input):
+# 1. query_mcp_server 함수 리팩토링
+import re
+
+async def query_mcp_server(command_input: str, server_url: str, available_tools: List[Any]) -> Dict[str, Any]:
     """
     fastmcp 라이브러리를 사용하여 MCP 서버에 명령을 보내고 응답을 받습니다.
+    도구 인자를 동적으로 처리하고, 입력 문자열을 정리합니다.
     """
-    server_url = "http://localhost:8001/sse"
-
     try:
-        parts = command_input.split()
-        if not parts:
+        # 입력 문자열의 양 끝 공백 제거
+        command_input = command_input.strip()
+        if not command_input:
             return {"error": "명령어를 입력해주세요."}
-            
-        tool_name = parts[0][1:]  # '/' 제거
+
+        parts = command_input.split()
+        command_part = parts[0]
         tool_args = parts[1:]
 
+        if not command_part.startswith('/'):
+            return {"error": "명령어는 /로 시작해야 합니다."}
+
+        # 정규표현식을 사용하여 명령어에서 알파벳, 숫자, 밑줄(_)만 남기고 모두 제거
+        tool_name = re.sub(r'[^a-zA-Z0-9_]', '', command_part[1:])
+
+        # 사용 가능한 도구 목록에서 요청된 도구 찾기
+        tool_to_call = next((tool for tool in available_tools if tool.name == tool_name), None)
+
+        if not tool_to_call:
+            available_tool_names = [tool.name for tool in available_tools]
+            # 디버깅을 위해 원본 명령어와 정리된 명령어를 모두 보여줌
+            return {"error": f"'{command_part[1:]}' (정리 후: '{tool_name}') 도구를 찾을 수 없습니다. 사용 가능한 도구: {available_tool_names}"}
+
+        # 도구의 파라미터 정보 가져오기
+        try:
+            param_properties = tool_to_call.parameters.get('properties', {})
+            param_names = list(param_properties.keys())
+        except AttributeError:
+            param_names = []
+
+        # 인자 개수 정확히 확인
+        if len(tool_args) != len(param_names):
+             return {"error": f"{tool_name} 도구는 {len(param_names)}개의 인자가 필요하지만, {len(tool_args)}개가 제공되었습니다. (필요: {param_names})"}
+
+        args_dict = dict(zip(param_names, tool_args))
+
         print(f"MCP 서버 {server_url}에 연결 중...")
-        
-        # async with 패턴 사용 (참고 코드와 동일한 방식)
         async with Client(server_url) as client:
             print("MCP 서버에 성공적으로 연결되었습니다.")
-            
-            # 먼저 사용 가능한 도구 목록 확인
-            try:
-                tools = await client.list_tools()
-                available_tools = [tool.name for tool in tools]
-                print(f"사용 가능한 도구들: {available_tools}")
-                
-                if tool_name not in available_tools:
-                    return {"error": f"'{tool_name}' 도구를 찾을 수 없습니다. 사용 가능한 도구: {available_tools}"}
-            except Exception as e:
-                print(f"도구 목록 조회 실패: {e}")
-            
-            # 동적으로 도구 호출 (하드코딩 제거)
-            if tool_name == "get_time":
-                args_dict = {}
-            elif tool_name == "get_weather":
-                if len(tool_args) >= 1:
-                    args_dict = {"location": tool_args[0]}
-                else:
-                    return {"error": "get_weather 도구에는 location 인자가 필요합니다."}
-            elif tool_name == "get_user_info":
-                if len(tool_args) >= 1:
-                    args_dict = {"username": tool_args[0]}
-                else:
-                    return {"error": "get_user_info 도구에는 username 인자가 필요합니다."}
-            else:
-                # 알 수 없는 도구의 경우 기본적으로 시도
-                args_dict = {}
-                for i, arg in enumerate(tool_args):
-                    args_dict[f"arg_{i}"] = arg
-            
             print(f"도구 '{tool_name}' 호출 중, 인자: {args_dict}")
             result = await client.call_tool(tool_name, args_dict)
             
-            # 참고 코드처럼 result.content[0].text로 접근 시도
             try:
                 if hasattr(result, 'content') and len(result.content) > 0:
                     tool_output = result.content[0].text
@@ -134,7 +152,6 @@ async def query_mcp_server(command_input):
                 else:
                     return {"tool_output": str(result), "raw_result": result}
             except (AttributeError, IndexError) as e:
-                # 혹시 구조가 다를 경우 대비
                 return {"error": f"응답 파싱 오류: {e}", "raw_result": str(result)}
 
     except ClientError as e:
@@ -146,26 +163,70 @@ async def query_mcp_server(command_input):
     except Exception as e:
         return {"error": f"명령 처리 중 오류 발생: {e}"}
 
+def generate_tool_call_prompt(user_input: str, tools: List[Any]) -> str:
+    """
+    사용 가능한 도구 목록을 기반으로 LLM의 도구 호출 프롬프트를 동적으로 생성합니다.
+    """
+    if not tools:
+        return ""
+        
+    tool_descriptions = []
+    for tool in tools:
+        # 파라미터 정보를 좀 더 상세히 표시
+        try:
+            param_properties = tool.parameters.get('properties', {})
+            params = ", ".join([f"{name}: {p.get('type', 'any')}" for name, p in param_properties.items()])
+        except AttributeError:
+            params = ""
+        tool_descriptions.append(f"- {tool.name}({params}): {tool.description}")
+
+    tools_formatted = "\n".join(tool_descriptions)
+
+    return f"""
+You are a tool calling assistant. Analyze the user's question and generate appropriate MCP tool call JSON.
+Available tools are as follows:
+{tools_formatted}
+
+User question: {user_input}
+
+If the question requires a tool, respond with JSON like: {{\"tool\": \"get_weather\", \"args\": [\"서울\"]}}
+If no tool is needed, respond with: {{\"tool\": null, \"args\": []}}
+
+Tool call JSON:
+"""
+
 async def main_async():
     """
     단일 실행 MCP 클라이언트.
     하나의 사용자 입력을 처리하고 종료합니다.
     """
+    config = AppConfig()
+    
     parser = argparse.ArgumentParser(description='MCP Client with Local LLM support')
-    parser.add_argument("-m", "--model", type=str, help="Path to model file", default="./models/BitNet-b1.58-2B-4T/ggml-model-i2_s.gguf")
-    parser.add_argument("-n", "--n-predict", type=int, help="Number of tokens to predict", default=256)
-    parser.add_argument("-t", "--threads", type=int, help="Number of threads to use", default=8)
-    parser.add_argument("-c", "--ctx-size", type=int, help="Size of the prompt context", default=2048)
-    parser.add_argument("-temp", "--temperature", type=float, help="Temperature for sampling", default=0.8)
-    parser.add_argument("-ngl", "--n-gpu-layers", type=int, help="Number of layers to offload to GPU", default=0)
+    parser.add_argument("-m", "--model", type=str, help="Path to model file", default=config.default_model_path)
+    parser.add_argument("-n", "--n-predict", type=int, help="Number of tokens to predict", default=config.default_n_predict)
+    parser.add_argument("-t", "--threads", type=int, help="Number of threads to use", default=config.default_threads)
+    parser.add_argument("-c", "--ctx-size", type=int, help="Size of the prompt context", default=config.default_ctx_size)
+    parser.add_argument("-temp", "--temperature", type=float, help="Temperature for sampling", default=config.default_temperature)
+    parser.add_argument("-ngl", "--n-gpu-layers", type=int, help="Number of layers to offload to GPU", default=config.default_n_gpu_layers)
     parser.add_argument("-q", "--query", type=str, help="User query to process", default=None)
     
     args = parser.parse_args()
 
-    print("==================================================")
-    print("  MCP 클라이언트 (단일 실행 모드)")
-    print("==================================================")
-    
+    print("====================================================")
+    print("  MCP 클라이언트 (단일 실행 모드) - 리팩토링 버전")
+    print("====================================================")
+
+    # 서버에서 사용 가능한 도구 목록 가져오기
+    print("서버에서 도구 목록을 가져오는 중...")
+    available_tools = await list_server_tools(config.server_url)
+    if available_tools:
+        tool_names = [tool.name for tool in available_tools]
+        print(f"사용 가능한 도구: {tool_names}")
+    else:
+        print("경고: 서버에서 도구 목록을 가져올 수 없습니다. 도구 관련 기능이 제한될 수 있습니다.")
+        available_tools = []
+
     # 명령행에서 질문을 받았는지 확인
     if args.query:
         user_input = args.query
@@ -173,29 +234,27 @@ async def main_async():
     else:
         user_input = input("질문을 입력하세요: ")
     
-    # 기본 시스템 프롬프트 정의
-    DEFAULT_SYSTEM_PROMPT = "You are a helpful AI agent assistant."
-
     try:
         if user_input.startswith('/'):
             # 특별 명령어 처리
             if user_input == "/tools":
-                print("서버의 도구 목록을 조회 중...")
-                tools = await list_server_tools("http://localhost:8001/sse")
-                if tools:
+                if available_tools:
                     print("사용 가능한 도구:")
-                    for tool in tools:
+                    for tool in available_tools:
                         print(f"  - {tool.name}: {tool.description}")
                 else:
                     print("도구 목록을 가져올 수 없습니다.")
                 return
             
             print("MCP 서버에 요청 중...")
-            server_response = await query_mcp_server(user_input)
+            server_response = await query_mcp_server(user_input, config.server_url, available_tools)
             print(f"서버 응답: {server_response}")
 
-            # 서버 응답 요약
-            if "tool_output" in server_response:
+            # 서버 응답에 오류가 있는지 먼저 확인
+            if "error" in server_response:
+                print(f"\n오류: {server_response['error']}")
+            elif "tool_output" in server_response:
+                # 성공적인 도구 실행 결과만 LLM으로 요약
                 tool_output = server_response["tool_output"]
                 summary_prompt = f"""[User Question]
 {user_input}
@@ -207,77 +266,18 @@ Please provide a concise and natural response in Korean to the user's question b
 
 [Final Answer]
 """
-            else:
-                summary_prompt = f"""사용자 질문: {user_input}
-서버 응답에 오류가 있었습니다: {server_response.get('error', '알 수 없는 오류')}
-이 상황을 사용자에게 친절하게 설명해주세요."""
-
-            print("LLM이 서버 응답을 요약 중...")
-            final_llm_response = query_local_llm(summary_prompt, args)
-            print(f"\n최종 답변: {final_llm_response}")
+                print("LLM이 서버 응답을 요약 중...")
+                final_llm_response_full = query_local_llm(summary_prompt, args)
+                # LLM 응답에서 첫 번째 줄만 최종 답변으로 사용
+                final_llm_response = final_llm_response_full.split('\n')[0].strip()
+                print(f"\n최종 답변: {final_llm_response}")
 
         else:
-            # 도구 호출 분석을 위한 LLM 프롬프트
-            tool_call_prompt = f"""
-            You are a tool calling assistant. Analyze the user's question and generate appropriate MCP tool call JSON.
-            Available tools are as follows:
-            - get_weather(location: str): Gets weather information for a specific location.
-            - get_user_info(username: str): Gets information about a specific user.
-            - get_time(): Gets the current time.
-
-            User question: {user_input}
-            
-            If the question requires a tool, respond with JSON like: {{"tool": "get_weather", "args": ["서울"]}}
-            If no tool is needed, respond with: {{"tool": null, "args": []}}
-            
-            Tool call JSON:
-            """
-            print("LLM이 도구 호출을 분석 중...")
-            llm_tool_call_response = query_local_llm(tool_call_prompt, args)
-            print(f"도구 분석 결과: {llm_tool_call_response}")
-            
-            try:
-                parsed_tool_call = json.loads(llm_tool_call_response)
-                tool_name = parsed_tool_call.get("tool")
-                tool_args = parsed_tool_call.get("args", [])
-                
-                if tool_name and tool_name != "null":
-                    mcp_command_input = f"/{tool_name} {' '.join(map(str, tool_args))}"
-                    print(f"LLM이 '{mcp_command_input}' 명령을 제안했습니다")
-                    
-                    # 도구 실행
-                    server_response = await query_mcp_server(mcp_command_input)
-                    print(f"서버 응답: {server_response}")
-                    
-                    if "tool_output" in server_response:
-                        tool_output = server_response["tool_output"]
-                        summary_prompt = f"""[User Question]
-{user_input}
-
-[Tool Execution Results]
-{tool_output}
-
-Please provide a concise and natural response in Korean to the user's question based on the tool execution results above.
-
-[Final Answer]
-"""
-                        print("LLM이 최종 답변을 생성 중...")
-                        final_llm_response = query_local_llm(summary_prompt, args)
-                        print(f"\n최종 답변: {final_llm_response}")
-                    else:
-                        print(f"도구 실행 오류: {server_response.get('error', '알 수 없는 오류')}")
-                else:
-                    # 일반 대화
-                    prompt = f"{DEFAULT_SYSTEM_PROMPT}\nUser: {user_input}\nAssistant:"
-                    print("LLM이 응답을 생성 중...")
-                    response = query_local_llm(prompt, args)
-                    print(f"\n답변: {response}")
-
-            except json.JSONDecodeError:
-                print("LLM이 유효한 도구 호출 JSON을 생성하지 못했습니다. 일반 대화로 처리합니다.")
-                prompt = f"{DEFAULT_SYSTEM_PROMPT}\nUser: {user_input}\nAssistant:"
-                response = query_local_llm(prompt, args)
-                print(f"\n답변: {response}")
+            # '/'로 시작하지 않는 모든 입력은 일반 대화로 처리
+            print("일반 대화로 처리합니다...")
+            prompt = f"{config.default_system_prompt}\nUser: {user_input}\nAssistant:"
+            response = query_local_llm(prompt, args)
+            print(f"\n답변: {response}")
 
     except Exception as e:
         print(f"오류 발생: {e}")
