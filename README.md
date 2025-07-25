@@ -9,12 +9,12 @@
 1. Clone the repo
 ```bash
 git clone --recursive https://github.com/YIDEUNKIM/BitNet-MCP.git
-cd BitNet
+cd BitNet-MCP
 ```
 2. Install the dependencies
 ```bash
 # (Recommended) Create a new conda environment
-conda create -n bitnet-mcp python=3.9
+conda create -n bitnet-mcp python=3.11.13
 conda activate bitnet-mcp
 
 pip install -r requirements.txt
