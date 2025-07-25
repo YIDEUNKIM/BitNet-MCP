@@ -123,3 +123,5 @@ These steps will initialize your environment and allow you to use the correct Vi
 | **`Rename`**     | 파일/폴더 명 수정 및 이동 작업                    |
 | **`Remove`**     | 파일/폴더 삭제                                    |
 | 🔥**`Hotfix`**   | 급하게 치명적인 버그를 고쳐야 하는 경우           |
+
+test
