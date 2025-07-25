@@ -17,6 +17,7 @@ cd BitNet-MCP
 conda create -n bitnet-mcp python=3.11.13
 conda activate bitnet-mcp
 
+cd BitNet
 pip install -r requirements.txt
 ```
 3. Build the project
@@ -50,6 +51,7 @@ optional arguments:
 
 ```bash
 # Run MCP Server
+cd ..
 python mcp_server.py
 ```
 
