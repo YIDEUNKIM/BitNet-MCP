@@ -8,7 +8,7 @@
 
 1. Clone the repo
 ```bash
-git clone --recursive https://github.com/microsoft/BitNet.git
+git clone --recursive https://github.com/YIDEUNKIM/BitNet-MCP.git
 cd BitNet
 ```
 2. Install the dependencies
