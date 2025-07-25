@@ -4,11 +4,12 @@ import os
 import platform
 import json
 import asyncio
+
 from dataclasses import dataclass, field
 from typing import List, Dict, Any, Optional
-
 from fastmcp import Client
 from fastmcp.exceptions import ClientError, ToolError, NotFoundError
+
 
 # 3. 설정 관리 개선
 @dataclass
@@ -21,7 +22,7 @@ class AppConfig:
     default_ctx_size: int = 2048
     default_temperature: float = 0.8
     default_n_gpu_layers: int = 0
-    default_system_prompt: str = "You are a helpful AI agent assistant."
+    default_system_prompt: str = "You are a intelligent AI agent assistant."
 
 def get_llama_cli_path():
     """
@@ -272,12 +273,28 @@ Please provide a concise and natural response in Korean to the user's question b
                 final_llm_response = final_llm_response_full.split('\n')[0].strip()
                 print(f"\n최종 답변: {final_llm_response}")
 
+
         else:
             # '/'로 시작하지 않는 모든 입력은 일반 대화로 처리
             print("일반 대화로 처리합니다...")
-            prompt = f"{config.default_system_prompt}\nUser: {user_input}\nAssistant:"
-            response = query_local_llm(prompt, args)
-            print(f"\n답변: {response}")
+            # 도구 호출과 동일한 구조화된 프롬프트 사용
+            structured_prompt = f"""
+        [System]
+        {config.default_system_prompt}
+        [User Question]
+        {user_input}
+        Please provide a concise and natural response to the user's question.
+        [Final Answer]
+        
+        """
+
+            response = query_local_llm(structured_prompt, args)
+
+            # [Final Answer] 이후의 첫 번째 줄만 추출 (도구 호출과 동일한 방식)
+
+            final_response = response.split('\n')[0].strip()
+
+            print(f"\n답변: {final_response}")
 
     except Exception as e:
         print(f"오류 발생: {e}")
