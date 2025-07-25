@@ -47,9 +47,16 @@ optional arguments:
 </pre>
 ## Usage
 ### Basic usage
+
+```bash
+# Run MCP Server
+python mcp_server.py
+```
+
 ```bash
 # Run inference with the quantized model
-python mcp.client.py
+cd BitNet
+python mcp_client.py
 ```
 <pre>
 usage: run_inference.py [-h] [-m MODEL] [-n N_PREDICT] -p PROMPT [-t THREADS] [-c CTX_SIZE] [-temp TEMPERATURE] [-cnv]
@@ -123,6 +130,3 @@ These steps will initialize your environment and allow you to use the correct Vi
 | **`Rename`**     | 파일/폴더 명 수정 및 이동 작업                    |
 | **`Remove`**     | 파일/폴더 삭제                                    |
 | 🔥**`Hotfix`**   | 급하게 치명적인 버그를 고쳐야 하는 경우           |
-
-test
-test2
