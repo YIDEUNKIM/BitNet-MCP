@@ -11,11 +11,11 @@ def get_time():
 @mcp.tool()
 def get_weather(location: str):
     """Returns weather information for a specific area."""
-    # 입력된 location 값을 소문자로 변환하여 비교합니다.
+    # Convert the input location value to lowercase for comparison.
     if location.lower() == "seoul":
-        return {"location": "seoul", "temperature": 25, "condition": "clean"} # 'clean'을 '맑음'으로 수정
+        return {"location": "seoul", "temperature": 25, "condition": "clean"}
     else:
-        # 일치하지 않는 지역에 대한 오류 메시지를 더 명확하게 반환합니다.
+        # Returns a more specific error message for non-matching locations.
         return {"location": location, "error": "error"}
 
 @mcp.tool()
@@ -24,8 +24,9 @@ def get_user_info(username: str):
     if username == "yideun":
         return {"username": "yideun", "status": "active", "email": "yideun@example.com"}
     else:
-        return {"username": username, "error": "유저를 찾을 수 없습니다."}
+        return {"username": username, "error": "User not found."}
 
 if __name__ == "__main__":
-    print("mcp server 시작")
+    print("Starting mcp server")
     mcp.run(transport="sse", host="localhost", port=8001)
+
