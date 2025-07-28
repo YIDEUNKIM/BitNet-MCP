@@ -1,5 +1,5 @@
 # BitNet-MCP
-## Hybrid BitNet-MCP for Efficient Query Processing
+## BitNet-MCP Hybrid System for Efficient Query Processing
 
 ### Build from source
 
@@ -16,6 +16,7 @@ cd BitNet-MCP
 # (Recommended) Create a new conda environment
 conda create -n bitnet-mcp python=3.11.13
 conda activate bitnet-mcp
+pip install fastmcp
 
 cd BitNet
 pip install -r requirements.txt
