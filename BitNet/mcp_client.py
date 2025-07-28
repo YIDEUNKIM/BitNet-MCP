@@ -4,17 +4,19 @@ import os
 import platform
 import json
 import asyncio
-
-from dataclasses import dataclass, field
+import re
+import ast
+from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
+from datetime import datetime
 from fastmcp import Client
 from fastmcp.exceptions import ClientError, ToolError, NotFoundError
 
 
-# 3. 설정 관리 개선
+# --- AppConfig, get_llama_cli_path, and query_local_slm functions are the same as before ---
 @dataclass
 class AppConfig:
-    """애플리케이션 설정을 관리하는 데이터 클래스"""
+    """Manages application settings."""
     server_url: str = "http://localhost:8001/sse"
     default_model_path: str = "./models/BitNet-b1.58-2B-4T/ggml-model-i2_s.gguf"
     default_n_predict: int = 256
@@ -22,13 +24,10 @@ class AppConfig:
     default_ctx_size: int = 2048
     default_temperature: float = 0.8
     default_n_gpu_layers: int = 0
-    default_system_prompt: str = "You are a intelligent AI agent assistant."
-
+    default_system_prompt: str = "You are an intelligent AI agent assistant."
 
 def get_llama_cli_path():
-    """
-    운영체제에 맞는 llama-cli 실행 파일의 전체 경로를 구성합니다.
-    """
+    """Constructs the full path to the llama-cli executable for the current OS."""
     build_dir = "build"
     if platform.system() == "Windows":
         main_path = os.path.join(build_dir, "bin", "Release", "llama-cli.exe")
@@ -36,180 +35,239 @@ def get_llama_cli_path():
             main_path = os.path.join(build_dir, "bin", "llama-cli")
     else:
         main_path = os.path.join(build_dir, "bin", "llama-cli")
-
     if not os.path.exists(main_path):
         raise FileNotFoundError(f"llama-cli not found at {main_path}. Please build the project first.")
     return main_path
 
 
-def query_local_llm(prompt: str, args, response_mode: str = "full") -> str:
-    """
-    llama-cli를 서브프로세스로 호출하여 로컬 LLM의 응답을 받아옵니다.
-    response_mode: "full" (전체 응답), "single_line" (첫 줄만)
-    """
-    # 디버깅: LLM에 전달되는 프롬프트 출력
-    print("\n[DEBUG] --- LLM Prompt ---")
-    print(prompt)
-    print("---------------------------")
-
+def query_local_slm(prompt: str, args, response_mode: str = "full") -> str:
+    """Invokes llama-cli as a subprocess and sanitizes the response."""
     try:
         llama_cli_path = get_llama_cli_path()
-
         command = [
-            f'{llama_cli_path}',
-            '-m', args.model,
-            '-p', prompt,
-            '-n', str(args.n_predict),
-            '-t', str(args.threads),
-            '-c', str(args.ctx_size),
-            '--temp', str(args.temperature),
-            '--no-display-prompt'  # 프롬프트 자체는 출력하지 않도록 옵션 추가
+            f'{llama_cli_path}', '-m', args.model, '-p', prompt, '-n', str(args.n_predict),
+            '-t', str(args.threads), '-c', str(args.ctx_size), '--temp', str(args.temperature),
+            '--no-display-prompt'
         ]
-        # GPU 사용 옵션이 있다면 추가
         if hasattr(args, 'n_gpu_layers') and args.n_gpu_layers > 0:
             command.extend(['-ngl', str(args.n_gpu_layers)])
-
         result = subprocess.run(
-            command,
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding='utf-8'
+            command, check=True, capture_output=True, text=True, encoding='utf-8'
         )
-
         response = result.stdout.strip()
-
-        # 응답 모드에 따라 처리
+        response = re.sub(r'\[.*?\]', '', response).strip()
         if response_mode == "single_line":
-            # 첫 번째 줄만 반환
             return response.split('\n')[0].strip()
-
         return response
-
     except FileNotFoundError as e:
         return str(e)
     except subprocess.CalledProcessError as e:
-        error_message = f"LLM 호출 중 오류 발생:\n"
-        print(error_message)
-        return ""
+        return f"SLM call failed: {e}"
 
 
-async def list_server_tools(server_url: str) -> Optional[List[Any]]:
-    """서버에서 사용 가능한 도구 목록을 가져옵니다."""
-    try:
-        async with Client(server_url) as client:
-            tools = await client.list_tools()
-            return tools
-    except Exception as e:
-        print(f"도구 목록을 가져오는데 실패했습니다: {e}")
-        return None
+class SLMToolClassifier:
+    """Uses SLM as a 'tool classifier' and corrects incomplete responses with code."""
+
+    def __init__(self, slm_func):
+        self.slm_func = slm_func
+
+    def select_tool(self, user_query: str, available_tools: List[Dict]) -> str:
+        """
+        Uses SLM as a 'tool classifier' and reliably selects the most suitable tool name
+        through a clear prompt and intelligent correction logic.
+        """
+        # 1. Create a clearly separated list of tools to show the SLM.
+        tool_descriptions_list = []
+        for tool in available_tools:
+            # Maximize clarity using "Tool Name:" and "Description:" labels.
+            tool_entry = f"- tool name: {tool['name']}\n  description: {tool.get('description', '')}"
+            tool_descriptions_list.append(tool_entry)
+
+        tools_text = "\n".join(tool_descriptions_list)
+
+        # 2. Design an enhanced prompt.
+        prompt = f"""[System Role]
+    You are a tool-selection expert. Your ONLY job is to analyze the user's query and the tool descriptions to identify the single best tool.
+    Respond with ONLY the `tool name`. Do not provide any other text or explanation.
+
+    [available tools]
+    - Tool Name: chat
+      Description: Use for general conversation, greetings, or when no other tool fits.
+    {tools_text}
+
+    [user query]
+    {user_query}
+
+    Your one-word response (the exact Tool Name):"""
+
+        # 3. Call the SLM to get a (potentially incomplete) response.
+        slm_output = self.slm_func(prompt, response_mode="single_line").strip().split()[0]
+        print("initial SLM tool select output: "+slm_output)
+
+        # 4. Apply intelligent correction logic.
+        valid_tool_names = [tool['name'] for tool in available_tools] + ['chat']
+
+        # 4a. If the SLM's response is already perfectly valid, return it immediately.
+        if slm_output in valid_tool_names:
+            return slm_output
+
+        # 4b. If the SLM's response is incomplete (e.g., 'get_user_'),
+        #     find a name in the list of valid tool names that starts with that response.
+        for tool_name in valid_tool_names:
+            if tool_name.startswith(slm_output):
+                print(f"[DEBUG] Corrected incomplete response '{slm_output}' to '{tool_name}'")
+                return tool_name
+
+        # 5. If correction also fails, handle it as 'chat' for safety.
+        return "chat"
 
 
-# 1. query_mcp_server 함수 리팩토링
-import re
+class PythonParameterExtractor:
+    """Dynamically reads the tool schema and extracts parameters with Python code."""
+
+    def extract(self, user_query: str, tool: Dict) -> Dict:
+        params_to_extract = tool.get('parameters', {}).get('properties', {})
+        if not params_to_extract:
+            return {}
+
+        query_lower = user_query.lower()
+        extracted_params = {}
+
+        # Dynamically create a list of 'stop words'.
+        stop_words = [
+            'what', 'is', 'was', 'are', 'the', 'a', 'an', 'in', 'for', 'of', 'about',
+            'explain', 'give', 'show', 'me', 'tell', 'can', 'you', 'my', 'i',
+            'please', 'provide', 'with', 'latest', 'current', 'how', 'like', 'information'
+        ]
+        # Also add the tool name itself (e.g., 'get', 'weather') to the stop words.
+        stop_words.extend(tool['name'].split('_'))
+
+        query_words = query_lower.split()
+        # Remove stop words and the parameter names themselves to leave only pure value candidates.
+        candidates = [word for word in query_words if word not in stop_words and word not in params_to_extract.keys()]
+
+        # Assign the last remaining candidate word to the first required parameter (most stable).
+        if candidates:
+            param_name = list(params_to_extract.keys())[0]  # Assume the first parameter is the target.
+            extracted_params[param_name] = candidates[-1]
+
+        return extracted_params
 
 
-async def query_mcp_server_with_tools(command_input: str, server_url: str) -> Dict[str, Any]:
-    """
-    MCP 서버에 연결하여 도구 목록을 가져오고 명령을 실행합니다.
-    서버 연결을 이 함수 내에서 처리합니다.
-    """
-    try:
-        # 입력 문자열의 양 끝 공백 제거
-        command_input = command_input.strip()
-        if not command_input:
-            return {"error": "명령어를 입력해주세요."}
+class ToolRouter:
+    """Manages dynamic tool selection and execution using a hybrid approach."""
 
-        parts = command_input.split()
-        command_part = parts[0]
-        tool_args = parts[1:]
+    def __init__(self, config: AppConfig, args):
+        self.config = config
+        self.args = args
+        self.tool_classifier = SLMToolClassifier(self._call_slm)
+        self.param_extractor = PythonParameterExtractor()
+        self._tools_cache = None
 
-        if not command_part.startswith('/'):
-            return {"error": "명령어는 /로 시작해야 합니다."}
+    def _call_slm(self, prompt: str, response_mode: str = "full") -> str:
+        return query_local_slm(prompt, self.args, response_mode)
 
-        # 정규표현식을 사용하여 명령어에서 알파벳, 숫자, 밑줄(_)만 남기고 모두 제거
-        tool_name = re.sub(r'[^a-zA-Z0-9_]', '', command_part[1:])
+    async def _get_available_tools(self) -> List[Dict[str, Any]]:
+        """Dynamically fetches the list of available tools from the server."""
+        if self._tools_cache: return self._tools_cache
+        try:
+            async with Client(self.config.server_url) as client:
+                tools = await client.list_tools()
+                print(f"\n[DEBUG] Dynamically fetched tools from server:\n{tools}\n")
+                self._tools_cache = [
+                    {"name": t.name, "description": t.description, "parameters": getattr(t, 'parameters', {})} for t in
+                    tools]
+                return self._tools_cache
+        except Exception as e:
+            print(f"Failed to retrieve tool list from MCP server: {e}")
+            return []
 
-        # 특별 명령어 처리
-        if tool_name == "tools":
-            # /tools 명령어일 때 도구 목록 가져오기
-            print("서버에서 도구 목록을 가져오는 중...")
-            available_tools = await list_server_tools(server_url)
-            if available_tools:
-                tools_info = []
-                for tool in available_tools:
-                    try:
-                        param_properties = tool.parameters.get('properties', {})
-                        params = ", ".join([f"{name}: {p.get('type', 'any')}" for name, p in param_properties.items()])
-                    except AttributeError:
-                        params = ""
-                    tools_info.append(f"  - {tool.name}({params}): {tool.description}")
-                return {"tool_output": "사용 가능한 도구:\n" + "\n".join(tools_info)}
-            else:
-                return {"error": "도구 목록을 가져올 수 없습니다."}
+    async def _execute_tool(self, tool_name: str, tool_params: Dict[str, Any]) -> Dict[str, Any]:
+        try:
+            async with Client(self.config.server_url) as client:
+                print(f"Executing tool '{tool_name}' with parameters: {tool_params}")
+                result = await client.call_tool(tool_name, tool_params)
+                print(f"\n[DEBUG] Raw tool result from server for '{tool_name}':\n{result}\n")
+                output = str(getattr(result, 'data', result))
+                return {"success": True, "output": output}
+        except Exception as e:
+            return {"success": False, "error": f"Tool execution failed: {e}"}
 
-        # 일반 도구 호출
-        print(f"MCP 서버 {server_url}에 연결 중...")
-        async with Client(server_url) as client:
-            print("MCP 서버에 성공적으로 연결되었습니다.")
+    def _generate_natural_response(self, query: str, tool_output: str, tool_name: str) -> str:
+        try:
+            data_dict = ast.literal_eval(tool_output)
+            readable_results = ", ".join([f"{key}: {value}" for key, value in data_dict.items()])
+        except (ValueError, SyntaxError):
+            readable_results = tool_output
+        prompt = f"""[System Role]
+You are a helpful assistant who summarizes tool results into natural, user-friendly language.
+[User's Original Question]
+{query}
 
-            # 도구 목록 가져오기
-            available_tools = await client.list_tools()
+[Tool Used]
+{tool_name}
 
-            # 사용 가능한 도구 목록에서 요청된 도구 찾기
-            tool_to_call = next((tool for tool in available_tools if tool.name == tool_name), None)
+[Tool Execution Result (pre-processed for clarity)]
+{readable_results}
 
-            if not tool_to_call:
-                available_tool_names = [tool.name for tool in available_tools]
-                return {
-                    "error": f"'{command_part[1:]}' (정리 후: '{tool_name}') 도구를 찾을 수 없습니다. 사용 가능한 도구: {available_tool_names}"}
+[Instruction]
+Based on the provided tool execution result, answer the user's original question in a complete and friendly English sentence.
+For example, if the result is "location: seoul, temperature: 25, condition: clean", your response should be like "Currently, the weather in Seoul is clean and the temperature is 25 degrees."
 
-            # 도구의 파라미터 정보 가져오기
-            try:
-                param_properties = tool_to_call.parameters.get('properties', {})
-                param_names = list(param_properties.keys())
-            except AttributeError:
-                param_names = []
+[Final Answer]
 
-            # 인자 개수 정확히 확인
-            if len(tool_args) != len(param_names):
-                return {
-                    "error": f"{tool_name} 도구는 {len(param_names)}개의 인자가 필요하지만, {len(tool_args)}개가 제공되었습니다. (필요: {param_names})"}
+"""
+        return self._call_slm(prompt, response_mode="single_line")
 
-            args_dict = dict(zip(param_names, tool_args))
+    def _handle_general_chat(self, query: str) -> str:
+        prompt = f"""[System Role]
+{self.config.default_system_prompt}
+[User's Original Question]
+{query}
 
-            print(f"도구 '{tool_name}' 호출 중, 인자: {args_dict}")
-            result = await client.call_tool(tool_name, args_dict)
+[Final Answer]
 
-            try:
-                if hasattr(result, 'content') and len(result.content) > 0:
-                    tool_output = result.content[0].text
-                    return {"tool_output": tool_output, "raw_result": result.content}
-                elif hasattr(result, 'data'):
-                    return {"tool_output": str(result.data), "raw_result": result.data}
+"""
+        return self._call_slm(prompt, response_mode="single_line")
+
+    async def route_query(self, user_query: str):
+        available_tools = await self._get_available_tools()
+        if not available_tools:
+            response = self._handle_general_chat(user_query);
+            print(f"Answer: {response}");
+            return
+
+        print("Step 1: Selecting the best tool with SLM Classifier...")
+        selected_tool_name = self.tool_classifier.select_tool(user_query, available_tools)
+        print(f"[DEBUG] Selected tool: '{selected_tool_name}'")
+
+        if selected_tool_name != "chat":
+            tool_to_execute = next((t for t in available_tools if t['name'] == selected_tool_name), None)
+            if tool_to_execute:
+                print(f"Step 2: Extracting parameters for '{selected_tool_name}' with Python Logic...")
+                tool_params = self.param_extractor.extract(user_query, tool_to_execute)
+                print(f"[DEBUG] Extracted parameters: {tool_params}")
+
+                tool_result = await self._execute_tool(selected_tool_name, tool_params)
+                if tool_result.get("success"):
+                    response = self._generate_natural_response(user_query, tool_result["output"], selected_tool_name)
+                    print(f"\n[Tool Used: {selected_tool_name}]")
                 else:
-                    return {"tool_output": str(result), "raw_result": result}
-            except (AttributeError, IndexError) as e:
-                return {"error": f"응답 파싱 오류: {e}", "raw_result": str(result)}
+                    response = self._handle_general_chat(user_query)
+                    print(f"\n[Tool execution failed, switching to general chat]")
+            else:
+                response = self._handle_general_chat(user_query)
+                print(f"\n[Tool '{selected_tool_name}' not found, switching to general chat]")
+        else:
+            response = self._handle_general_chat(user_query)
 
-    except ClientError as e:
-        return {"error": f"MCP 서버 연결 실패: {server_url} - {e}"}
-    except NotFoundError as e:
-        return {"error": f"서버에 '{tool_name}' 도구가 존재하지 않습니다: {e}"}
-    except ToolError as e:
-        return {"error": f"도구 실행 중 오류 발생: {e}"}
-    except Exception as e:
-        return {"error": f"명령 처리 중 오류 발생: {e}"}
+        print(f"Answer: {response}")
 
 
+# --- main_async and main functions are the same as before ---
 async def main_async():
-    """
-    단일 실행 MCP 클라이언트.
-    하나의 사용자 입력을 처리하고 종료합니다.
-    """
     config = AppConfig()
-
-    parser = argparse.ArgumentParser(description='MCP Client with Local LLM support')
+    parser = argparse.ArgumentParser(description='Final Hybrid Dynamic MCP Client')
     parser.add_argument("-m", "--model", type=str, help="Path to model file", default=config.default_model_path)
     parser.add_argument("-n", "--n-predict", type=int, help="Number of tokens to predict",
                         default=config.default_n_predict)
@@ -221,90 +279,26 @@ async def main_async():
     parser.add_argument("-ngl", "--n-gpu-layers", type=int, help="Number of layers to offload to GPU",
                         default=config.default_n_gpu_layers)
     parser.add_argument("-q", "--query", type=str, help="User query to process", default=None)
-
     args = parser.parse_args()
-
-    print("====================================================")
-    print("  MCP 클라이언트 (단일 실행 모드) - 개선된 버전")
-    print("====================================================")
-    print("팁: /tools 명령어로 사용 가능한 도구를 확인할 수 있습니다.")
-
-    # 명령행에서 질문을 받았는지 확인
-    if args.query:
-        user_input = args.query
-        print(f"명령행 질문: {user_input}")
-    else:
-        user_input = input("질문을 입력하세요: ")
-
+    print("======================================================")
+    print("  MCP Client - Hybrid Dynamic Tool Selection (Final Version)")
+    print("======================================================")
+    router = ToolRouter(config, args)
+    user_input = args.query or input("\nEnter your question: ")
     try:
-        if user_input.startswith('/'):
-            # '/'로 시작하면 MCP 서버에 연결
-            print("MCP 서버에 요청 중...")
-            server_response = await query_mcp_server_with_tools(user_input, config.server_url)
-
-            # 서버 응답에 오류가 있는지 먼저 확인
-            if "error" in server_response:
-                print(f"\n오류: {server_response['error']}")
-            elif "tool_output" in server_response:
-                tool_output = server_response["tool_output"]
-
-                # /tools 명령어는 그대로 출력
-                if user_input.strip() == "/tools":
-                    print(f"\n{tool_output}")
-                else:
-                    # 성공적인 도구 실행 결과를 LLM으로 요약
-                    summary_prompt = f"""[User Question]
-{user_input}
-
-[Tool Execution Results]
-{tool_output}
-
-Please provide a concise and natural response in Korean to the user's question based on the tool execution results above.
-
-[Final Answer]
-"""
-                    print("LLM이 서버 응답을 요약 중...")
-                    final_response = query_local_llm(summary_prompt, args, response_mode="single_line")
-                    print(f"\n최종 답변: {final_response}")
-
-        else:
-            # '/'로 시작하지 않는 모든 입력은 일반 대화로 처리 (서버 연결 없음)
-            print("일반 대화로 처리합니다...")
-
-            # 구조화된 프롬프트 사용
-            chat_prompt = f"""[System]
-            
-{config.default_system_prompt}
-
-
-[User Question]
-
-{user_input}
-
-
-Please provide a concise and natural response to the user's question.
-
-[Final Answer]
-
-"""
-
-            response = query_local_llm(chat_prompt, args, response_mode="single_line")
-            print(f"\n답변: {response}")
-
+        await router.route_query(user_input)
     except Exception as e:
-        print(f"오류 발생: {e}")
-
-    print("\n실행 완료.")
+        print(f"A critical error occurred during processing: {e}")
+    print("\nExecution complete.")
 
 
 def main():
-    """
-    동기 main 함수에서 비동기 main_async 실행
-    """
     try:
         asyncio.run(main_async())
+    except KeyboardInterrupt:
+        print("\nExecution interrupted by user.")
     except Exception as e:
-        print(f"프로그램 실행 중 오류 발생: {e}")
+        print(f"An error occurred during program execution: {e}")
 
 
 if __name__ == "__main__":

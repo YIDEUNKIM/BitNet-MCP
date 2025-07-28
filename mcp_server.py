@@ -4,21 +4,23 @@ mcp = FastMCP()
 
 @mcp.tool()
 def get_time():
-    """현재 시간을 반환합니다."""
+    """Return the current time."""
     import datetime
     return {"current_time": str(datetime.datetime.now())}
 
 @mcp.tool()
 def get_weather(location: str):
-    """특정 지역의 날씨 정보를 반환합니다."""
-    if location == "서울":
-        return {"location": "서울", "temperature": 25, "condition": "맑음"}
+    """Returns weather information for a specific area."""
+    # 입력된 location 값을 소문자로 변환하여 비교합니다.
+    if location.lower() == "seoul":
+        return {"location": "seoul", "temperature": 25, "condition": "clean"} # 'clean'을 '맑음'으로 수정
     else:
-        return {"location": location, "error": "날씨 정보를 찾을 수 없습니다."}
+        # 일치하지 않는 지역에 대한 오류 메시지를 더 명확하게 반환합니다.
+        return {"location": location, "error": "error"}
 
 @mcp.tool()
 def get_user_info(username: str):
-    """특정 유저의 정보를 반환합니다."""
+    """Return the information of specified user."""
     if username == "yideun":
         return {"username": "yideun", "status": "active", "email": "yideun@example.com"}
     else:
