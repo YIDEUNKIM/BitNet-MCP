@@ -88,7 +88,7 @@ class SLMToolClassifier:
         # 2. Design an enhanced prompt.
         prompt = f"""[System Role]
     You are a tool-selection expert. Your ONLY job is to analyze the user's query and the tool descriptions to identify the single best tool.
-    Respond with ONLY the `tool name`. Do not provide any other text or explanation.
+    Respond with ONLY the `tool name`. If there is no appropriate tool, return only "chat". Do not provide any other text or explanation.
 
     [available tools]
     - Tool Name: chat
@@ -122,6 +122,7 @@ class SLMToolClassifier:
         return "chat"
 
 
+# 현재의 클래스 logic 이라면 한계가 분명함 해당 클래스 upgrade 필요
 class PythonParameterExtractor:
     """Dynamically reads the tool schema and extracts parameters with Python code."""
 
