@@ -67,8 +67,7 @@ ALLOW_FUNCTION = {
 @mcp.tool()
 def calculate(expression: str) -> dict:
     """
-    Evaluates a given mathematical expression string.
-    Supports basic operators, functions like sin/cos/log, and constants like pi.
+    Evaluates a given mathematical expression string. [param: expression, type: math_expression]
     """
     try:
         # Safe evaluation of the expression
@@ -85,8 +84,7 @@ def calculate(expression: str) -> dict:
 @mcp.tool()
 def solve_equation(equation: str) -> dict:
     """
-    Solves an algebraic equation for the variable 'x'.
-    The input must be a string containing a single '=' sign, like 'x**2 - 4 = 0'.
+    Solves an algebraic equation for the variable 'x'. [param: equation, type: equation]
     """
     try:
         x = symbols("x")
@@ -105,11 +103,11 @@ def solve_equation(equation: str) -> dict:
         return {"error": str(e)}
 
 
+# 미분
 @mcp.tool()
 def differentiate(expression: str, variable: str = "x") -> dict:
     """
-    Computes the derivative of an expression with respect to a variable (default is 'x').
-    For example, differentiating 'x**3' with respect to 'x' yields '3*x**2'.
+    Computes the derivative of an expression. [param: expression, type: math_expression] [param: variable, type: string]
     """
     try:
         var = symbols(variable)
@@ -119,11 +117,11 @@ def differentiate(expression: str, variable: str = "x") -> dict:
     except Exception as e:
         return {"error": str(e)}
 
-
+#적분
 @mcp.tool()
 def integrate(expression: str, variable: str = "x") -> dict:
     """
-    Computes the indefinite integral of an expression with respect to a variable (default is 'x').
+    Computes the indefinite integral of an expression. [param: expression, type: math_expression] [param: variable, type: string]
     For example, integrating '2*x' with respect to 'x' yields 'x**2'.
     """
     try:
@@ -134,11 +132,10 @@ def integrate(expression: str, variable: str = "x") -> dict:
     except Exception as e:
         return {"error": str(e)}
 
-
 @mcp.tool()
 def summation(expression: str, start: int = 0, end: int = 10) -> dict:
     """
-    Calculates the summation (sigma) of an expression over a given integer range.
+    Calculates the summation (sigma) of an expression. [param: expression, type: math_expression] [param: start, type: integer] [param: end, type: integer]
     Requires an expression string, a start value, and an end value.
     """
     try:
@@ -153,7 +150,7 @@ def summation(expression: str, start: int = 0, end: int = 10) -> dict:
 @mcp.tool()
 def expand(expression: str) -> dict:
     """
-    Expands a mathematical expression. For example, '(x + 1)**2' becomes 'x**2 + 2*x + 1'.
+    Expands a mathematical expression. [param: expression, type: math_expression]
     """
     try:
         x = sp.Symbol("x")
@@ -162,11 +159,10 @@ def expand(expression: str) -> dict:
     except Exception as e:
         return {"error": str(e)}
 
-
 @mcp.tool()
 def factorize(expression: str) -> dict:
     """
-    Factorizes a mathematical expression. For example, 'x**2 - 1' becomes '(x - 1)*(x + 1)'.
+    Factorizes a mathematical expression. [param: expression, type: math_expression]
     """
     try:
         x = sp.Symbol("x")
@@ -179,4 +175,4 @@ if __name__ == "__main__":
     print("Starting calculator_server")
     # Note: The 'host' and 'port' arguments might cause a TypeError in newer fastmcp versions.
     # If so, use: mcp.run(transport="sse")
-    mcp.run(transport="sse")
+    mcp.run(transport="sse", host="localhost", port=8001)

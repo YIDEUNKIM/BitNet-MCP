@@ -8,33 +8,28 @@ import re
 import ast
 from dataclasses import dataclass
 from typing import List, Dict, Any, Optional
-from datetime import datetime
 from fastmcp import Client
 from fastmcp.exceptions import ClientError, ToolError, NotFoundError
 
 
-# --- AppConfig, get_llama_cli_path, and query_local_slm functions are the same as before ---
+# --- AppConfig, get_llama_cli_path, and query_local_slm are the same ---
 @dataclass
 class AppConfig:
-    """Manages application settings."""
     server_url: str = "http://localhost:8001/sse"
     default_model_path: str = "./models/BitNet-b1.58-2B-4T/ggml-model-i2_s.gguf"
     default_n_predict: int = 256
     default_threads: int = 8
-    default_ctx_size: int = 2048  # 2048
+    default_ctx_size: int = 2048
     default_temperature: float = 0.8
     default_n_gpu_layers: int = 0
     default_system_prompt: str = "You are an intelligent AI agent assistant."
 
 
 def get_llama_cli_path():
-    """Constructs the full path to the llama-cli executable for the current OS."""
     build_dir = "build"
-    if platform.system() == "Windows":
-        main_path = os.path.join(build_dir, "bin", "Release", "llama-cli.exe")
-        if not os.path.exists(main_path):
-            main_path = os.path.join(build_dir, "bin", "llama-cli")
-    else:
+    main_path = os.path.join(build_dir, "bin", "llama-cli.exe") if platform.system() == "Windows" else os.path.join(
+        build_dir, "bin", "llama-cli")
+    if platform.system() == "Windows" and not os.path.exists(main_path):
         main_path = os.path.join(build_dir, "bin", "llama-cli")
     if not os.path.exists(main_path):
         raise FileNotFoundError(f"llama-cli not found at {main_path}. Please build the project first.")
@@ -42,118 +37,68 @@ def get_llama_cli_path():
 
 
 def query_local_slm(prompt: str, args, response_mode: str = "full") -> str:
-    """Invokes llama-cli as a subprocess and sanitizes the response."""
     try:
         llama_cli_path = get_llama_cli_path()
-        command = [
-            f'{llama_cli_path}', '-m', args.model, '-p', prompt, '-n', str(args.n_predict),
-            '-t', str(args.threads), '-c', str(args.ctx_size), '--temp', str(args.temperature),
-            '--no-display-prompt'
-        ]
-        if hasattr(args, 'n_gpu_layers') and args.n_gpu_layers > 0:
-            command.extend(['-ngl', str(args.n_gpu_layers)])
-        result = subprocess.run(
-            command, check=True, capture_output=True, text=True, encoding='utf-8'
-        )
+        command = [f'{llama_cli_path}', '-m', args.model, '-p', prompt, '-n', str(args.n_predict), '-t',
+                   str(args.threads), '-c', str(args.ctx_size), '--temp', str(args.temperature), '--no-display-prompt']
+        if hasattr(args, 'n_gpu_layers') and args.n_gpu_layers > 0: command.extend(['-ngl', str(args.n_gpu_layers)])
+        result = subprocess.run(command, check=True, capture_output=True, text=True, encoding='utf-8')
         response = result.stdout.strip()
         response = re.sub(r'\[.*?\]', '', response).strip()
-        if response_mode == "single_line":
-            return response.split('\n')[0].strip()
-        return response
-    except FileNotFoundError as e:
-        return str(e)
-    except subprocess.CalledProcessError as e:
+        return response.split('\n')[0].strip() if response_mode == "single_line" else response
+    except (FileNotFoundError, subprocess.CalledProcessError) as e:
         return f"SLM call failed: {e}"
 
 
 class SLMToolClassifier:
-    """Uses SLM as a 'tool classifier' and corrects incomplete responses with code."""
-
     def __init__(self, slm_func):
         self.slm_func = slm_func
 
-        # SLMToolClassifier 클래스 내부의 select_tool 함수를 이 코드로 교체하세요.
-
     def select_tool(self, user_query: str, available_tools: List[Dict]) -> str:
-        """
-        Uses SLM as a 'tool classifier' and reliably selects the most suitable tool name
-        through a clear prompt and robust, fuzzy matching logic.
-        """
-        tool_descriptions_list = []
-        for tool in available_tools:
-            tool_entry = f"- tool name: {tool['name']}\n  description: {tool.get('description', '')}"
-            tool_descriptions_list.append(tool_entry)
-
-        tools_text = "\n".join(tool_descriptions_list)
-
+        tools_text = "\n".join(
+            [f"- tool name: {tool['name']}\n  description: {tool.get('description', '')}" for tool in available_tools])
         prompt = f"""[System Role]
-You are a tool-selection expert. Your ONLY job is to analyze the user's query and the tool descriptions to identify the single best tool.
-Respond with ONLY the `tool name`. If there is no appropriate tool, return only "chat".
+You are a tool-selection expert. Respond with ONLY the `tool name`. If no tool fits, return "chat".
 [available tools]
 - Tool Name: chat
-  Description: Use for general conversation, greetings, or when no other tool fits.
+  Description: For general conversation.
 {tools_text}
 [user query]
 {user_query}
 Your one-word response (the exact Tool Name):"""
-
         slm_output = self.slm_func(prompt, response_mode="single_line").strip().lower()
         print(f"initial SLM tool select output: {slm_output}")
-
-        if slm_output.startswith("slm call failed"):
-            print(f"[DEBUG] SLM tool selection failed. Falling back to chat.")
-            return "chat"
-
+        if slm_output.startswith("slm call failed"): return "chat"
         valid_tool_names = [tool['name'] for tool in available_tools] + ['chat']
-
-        # ✨ --- 새로운 관대한(Fuzzy) 매칭 로직 --- ✨
-        # 1순위: 정확히 일치하는지 먼저 확인 (가장 빠르고 정확)
-        if slm_output in valid_tool_names:
-            return slm_output
-
-        # 2순위: 밑줄(_)을 기준으로 "관대한" 매칭 시도
-        # 예: "solve__equation"을 "solve_equation"으로 매칭
+        if slm_output in valid_tool_names: return slm_output
         for tool_name in valid_tool_names:
             if "_" in tool_name:
-                # 각 이름을 밑줄로 분리하여 공백이 아닌 부분만 세트(set)로 만듭니다.
                 tool_parts = set(part for part in tool_name.split('_') if part)
                 slm_parts = set(part for part in slm_output.split('_') if part)
-
-                # 도구 이름의 모든 구성요소가 SLM 출력에 포함되는지 확인
                 if tool_parts and tool_parts.issubset(slm_parts):
                     print(f"   - Fuzzy match successful: mapped '{slm_output}' to '{tool_name}'")
                     return tool_name
-
-        # 3순위: 기존의 포함(substring) 관계 확인 (최후의 보루)
         for tool_name in valid_tool_names:
-            if tool_name in slm_output:
-                return tool_name
-
-        # 모든 매칭 실패 시 chat으로 fallback
+            if tool_name in slm_output: return tool_name
         return "chat"
 
 
 class SLMParameterExtractor:
-    """Uses an SLM to extract parameters for a given tool based on its schema."""
-
     def __init__(self, slm_func):
         self.slm_func = slm_func
 
     def extract(self, user_query: str, tool: Dict) -> Dict:
+        # 이 함수는 이제 복잡한 다중 파라미터 도구를 위한 최후의 보루 역할만 합니다.
         params_schema = tool.get('parameters', {}).get('properties', {})
         if not params_schema: return {}
         schema_text = "\n".join(
-            [f"- {name} ({details.get('type', 'N/A')}): {details.get('description', 'No description.')}" for
-             name, details in params_schema.items()])
-        examples = """
-[Examples]
-- User Query: "what is 5 * 3?"
-- Extracted Parameters: {"expression": "5 * 3"}
-- User Query: "can you solve x**2 - 4 = 0 for me?"
-- Extracted Parameters: {"equation": "x**2 - 4 = 0"}
-"""
+            [f"- {param_name} ({details.get('type', 'N/A')}): {details.get('description', 'No description.')}" for
+             param_name, details in params_schema.items()])
+        examples = """[Examples]
+- User Query: "differentiate x**3 with respect to x"
+- Extracted Parameters: {"expression": "x**3", "variable": "x"}"""
         prompt = f"""[System Role]
-You are an expert data extraction assistant. Your task is to analyze the user's query and extract the required parameters for the given tool. Respond ONLY with a single, valid, minified JSON object.
+You are an expert data extraction assistant. Respond ONLY with a single, valid, minified JSON object.
 [Tool Name]
 {tool['name']}
 [Parameter Schema]
@@ -161,8 +106,7 @@ You are an expert data extraction assistant. Your task is to analyze the user's 
 {examples}
 [User Query to Process]
 {user_query}
-[Extracted Parameters (JSON only)]
-"""
+[Extracted Parameters (JSON only)]"""
         slm_response = self.slm_func(prompt, response_mode="full")
         if slm_response.startswith("slm call failed"): return {}
         try:
@@ -173,14 +117,18 @@ You are an expert data extraction assistant. Your task is to analyze the user's 
 
 
 class ToolRouter:
-    """Manages dynamic tool selection and execution using a hybrid approach."""
-
     def __init__(self, config: AppConfig, args):
         self.config = config
         self.args = args
         self.tool_classifier = SLMToolClassifier(self._call_slm)
         self.param_extractor = SLMParameterExtractor(self._call_slm)
         self._tools_cache = None
+
+        # ✨ --- 클라이언트의 "스킬셋": 어떤 타입의 힌트를 어떤 전문가가 처리할지 정의 --- ✨
+        self.strategy_by_type = {
+            'equation': self._extract_equation,
+            'math_expression': self._extract_math_expression,
+        }
 
     def _call_slm(self, prompt: str, response_mode: str = "full") -> str:
         return query_local_slm(prompt, self.args, response_mode)
@@ -190,8 +138,28 @@ class ToolRouter:
         try:
             async with Client(self.config.server_url) as client:
                 tools = await client.list_tools()
-                self._tools_cache = [{"name": t.name, "description": (t.description or '').split('\n')[0],
-                                      "parameters": getattr(t, 'parameters', {})} for t in tools]
+
+                self._tools_cache = []
+                for t in tools:
+                    full_description = t.description or ''
+                    # 간결한 설명을 위해 첫 줄만 사용 (프롬프트 과부하 방지)
+                    concise_desc = full_description.strip().split('\n')[0]
+
+                    # ✨ --- '자기소개서'를 파싱하여 구조화된 파라미터 정보 생성 --- ✨
+                    parsed_params = {}
+                    # `[param: 이름, type: 종류]` 태그를 모두 찾음
+                    param_tags = re.findall(r'\[param:\s*(\w+),\s*type:\s*(\w+)\]', full_description)
+                    for name, type in param_tags:
+                        parsed_params[name] = {"type": type}
+
+                    tool_data = {
+                        "name": t.name,
+                        "description": concise_desc,
+                        "parameters": {"properties": parsed_params}  # fastmcp가 줬어야 할 정보를 직접 생성
+                    }
+                    self._tools_cache.append(tool_data)
+
+                print(f"[DEBUG] Loaded and structured tools: {json.dumps(self._tools_cache, indent=2)}")
                 return self._tools_cache
         except Exception as e:
             print(f"Failed to retrieve tool list from MCP server: {e}")
@@ -213,17 +181,14 @@ class ToolRouter:
         except (ValueError, SyntaxError):
             readable_results = tool_output
         prompt = f"""[System Role]
-You are a helpful assistant who summarizes tool results into natural, user-friendly language.
+You are a helpful assistant who summarizes tool results into natural language.
 [User's Original Question]
 {query}
 [Tool Used]
 {tool_name}
-[Tool Execution Result (pre-processed for clarity)]
+[Tool Execution Result]
 {readable_results}
-[Instruction]
-Based on the provided tool execution result, answer the user's original question in a complete and friendly English sentence.
-[Final Answer]
-"""
+[Final Answer]"""
         return self._call_slm(prompt, response_mode="single_line")
 
     def _handle_general_chat(self, query: str) -> str:
@@ -231,19 +196,16 @@ Based on the provided tool execution result, answer the user's original question
 {self.config.default_system_prompt}
 [User's Original Question]
 {query}
-[Final Answer]
-"""
+[Final Answer]"""
         return self._call_slm(prompt, response_mode="single_line")
 
     def _extract_math_expression(self, query: str) -> Optional[str]:
-        math_token_pattern = re.compile(
-            r"[\d\.]+|\*\*|[\+\-\*\/=]|\b(?:sin|cos|tan|log|sqrt|exp|pi|e|x)\b|[()]",
-            re.IGNORECASE
-        )
+        # 이 함수는 변경되지 않음
+        math_token_pattern = re.compile(r"[\d\.]+|\*\*|[\+\-\*\/=]|\b(?:sin|cos|tan|log|sqrt|exp|pi|e|x)\b|[()]",
+                                        re.IGNORECASE)
         matches = list(math_token_pattern.finditer(query))
         if not matches: return None
-
-        sequences = []
+        sequences, current_sequence = [], []
         if matches:
             current_sequence = [matches[0]]
             for i in range(1, len(matches)):
@@ -252,19 +214,22 @@ Based on the provided tool execution result, answer the user's original question
                 if gap.isspace() or not gap:
                     current_sequence.append(current_match)
                 else:
-                    sequences.append(current_sequence)
-                    current_sequence = [current_match]
+                    sequences.append(current_sequence); current_sequence = [current_match]
             sequences.append(current_sequence)
-
         candidates = [query[seq[0].start():seq[-1].end()] for seq in sequences if seq]
         if not candidates: return None
-
         best_candidate = max(candidates, key=len)
-        if re.search(r"[\d\+\-\*\/=]|\*\*", best_candidate):
-            return best_candidate.strip()
+        if re.search(r"[\d\+\-\*\/=]|\*\*", best_candidate): return best_candidate.strip()
         return None
 
-        # ToolRouter 클래스 내부의 route_query 함수를 이 코드로 교체하세요.
+    def _extract_equation(self, query: str) -> Optional[str]:
+        # 이 함수는 변경되지 않음
+        if '=' not in query: return None
+        valid_char_pattern = r"[\d\w\.\s\(\)\*\+\-\/\=]"
+        candidates = re.findall(f"({valid_char_pattern}+)", query)
+        equation_candidates = [c for c in candidates if '=' in c]
+        if not equation_candidates: return None
+        return max(equation_candidates, key=len).strip()
 
     async def route_query(self, user_query: str):
         available_tools = await self._get_available_tools()
@@ -275,6 +240,7 @@ Based on the provided tool execution result, answer the user's original question
 
         print("Step 1: Selecting the best tool with SLM Classifier...")
         processed_query = user_query.replace('^', '**')
+        processed_query = re.sub(r'(\d)([a-zA-Z])', r'\1*\2', processed_query)
         selected_tool_name = self.tool_classifier.select_tool(processed_query, available_tools)
         print(f"[DEBUG] Selected tool: '{selected_tool_name}'")
 
@@ -283,68 +249,46 @@ Based on the provided tool execution result, answer the user's original question
         else:
             tool_to_execute = next((t for t in available_tools if t['name'] == selected_tool_name), None)
             if not tool_to_execute:
-                response = self._handle_general_chat(user_query)
+                response = self._handle_general_chat(user_query);
                 print(f"\n[Tool '{selected_tool_name}' not found, switching to general chat]")
             else:
-                param_names = list(tool_to_execute.get('parameters', {}).get('properties', {}).keys())
                 tool_params = None
-
                 print("Step 2: Attempting parameter extraction...")
 
-                # ✨ --- 최종 수정: 모든 단일 파라미터 도구를 안정적으로 처리하도록 확장 --- ✨
-                # [1순위] 명시적 명령어 형식: "get_weather seoul"
-                if processed_query.lower().startswith(selected_tool_name.lower()):
-                    print("   - Strategy: Detected command-like query. Applying rule-based extraction.")
-                    argument_str = processed_query[len(selected_tool_name):].strip()
+                # ✨ --- 최종 동적 로직 --- ✨
+                parameters = tool_to_execute.get('parameters', {}).get('properties', {})
 
-                    # 서버가 파라미터 정보를 주지 않아도, 단일 파라미터 도구라고 가정하고 처리
-                    # 이 경우, 파라미터 이름을 알아내야 하지만, 대부분의 단일 파라미터 도구는
-                    # 파라미터 이름이 'location', 'username', 'expression' 등으로 예측 가능함.
-                    # 가장 안정적인 방법은 아래 2순위에서처럼 맵을 사용하는 것.
-                    # 여기서는 우선 SLM으로 넘겨서 처리하게 둔다.
+                # 규칙 기반 추출이 가능한 파라미터가 있는지 확인
+                extracted_rule_params = {}
+                requires_slm = False
 
-                # [2순위] 규칙 기반 엔티티 추출: 자연어 속에 포함된 특정 패턴을 안정적으로 추출
-                if tool_params is None:
-                    # ✨ 확장 가능한 맵: 여기에 새 도구를 추가하면 안정성이 크게 향상됩니다.
-                    RELIABLE_SINGLE_PARAM_TOOLS = {
-                        # 수학 도구
-                        'calculate': {'param': 'expression', 'extractor': self._extract_math_expression},
-                        'solve_equation': {'param': 'equation', 'extractor': self._extract_math_expression},
-                        'expand': {'param': 'expression', 'extractor': self._extract_math_expression},
-                        'factorize': {'param': 'expression', 'extractor': self._extract_math_expression},
-
-                        # ✨ 새로운 도구 추가 ✨
-                        'get_weather': {'param': 'location',
-                                        'extractor': lambda q: q.split(" in ")[-1].split(" ")[0]},
-                        # "weather in Seoul" -> "Seoul"
-                        'get_user_info': {'param': 'username', 'extractor': lambda q: q.split("'s ")[0]}
-                        # "yideun's info" -> "yideun"
-                    }
-
-                    if selected_tool_name in RELIABLE_SINGLE_PARAM_TOOLS:
-                        tool_info = RELIABLE_SINGLE_PARAM_TOOLS[selected_tool_name]
+                for param_name, param_details in parameters.items():
+                    param_type = param_details.get("type")
+                    if param_type in self.strategy_by_type:
+                        extractor_func = self.strategy_by_type[param_type]
                         print(
-                            f"   - Strategy: Reliable tool '{selected_tool_name}' detected. Attempting specialized extraction.")
-
-                        # 명령어 부분만 제거하고 순수 쿼리 전달
-                        query_for_extraction = re.sub(f'^{selected_tool_name}\\s*', '', processed_query, count=1,
-                                                      flags=re.IGNORECASE).strip()
-
-                        # 도구별 맞춤 추출기(extractor) 사용
-                        extracted_value = tool_info['extractor'](query_for_extraction)
-
+                            f"   - Strategy: Found hint for '{param_name}' (type: {param_type}). Using extractor: {extractor_func.__name__}")
+                        extracted_value = extractor_func(processed_query)
                         if extracted_value:
-                            tool_params = {tool_info['param']: extracted_value}
+                            extracted_rule_params[param_name] = extracted_value
+                    else:
+                        # 컨트롤 타워에 없는 타입은 SLM 처리가 필요하다고 표시
+                        requires_slm = True
 
-                # [3순위] SLM 기반 추출 (최후의 보루)
-                if tool_params is None:
-                    print("   - Strategy: No rules matched. Falling back to SLM-based extraction.")
-                    tool_params = self.param_extractor.extract(processed_query, tool_to_execute)
+                # 규칙으로 모든 파라미터를 찾았고, SLM이 필요 없다면 바로 사용
+                if extracted_rule_params and not requires_slm:
+                    tool_params = extracted_rule_params
+                else:
+                    # 규칙으로 일부만 찾았거나, SLM이 필요한 파라미터가 있다면 SLM 호출
+                    print("   - Strategy: No suitable rule for all params found. Falling back to SLM.")
+                    slm_params = self.param_extractor.extract(processed_query, tool_to_execute)
+                    # 규칙 기반 결과와 SLM 결과를 합침 (SLM 결과를 우선)
+                    tool_params = {**extracted_rule_params, **slm_params}
 
                 print(f"[DEBUG] Extracted parameters: {tool_params}")
 
-                if param_names and not tool_params and selected_tool_name not in RELIABLE_SINGLE_PARAM_TOOLS:
-                    response = self._handle_general_chat(user_query)
+                if not tool_params and parameters:
+                    response = self._handle_general_chat(user_query);
                     print(f"\n[Parameter extraction failed for '{selected_tool_name}', switching to general chat]")
                 else:
                     tool_result = await self._execute_tool(selected_tool_name, tool_params or {})
@@ -353,11 +297,13 @@ Based on the provided tool execution result, answer the user's original question
                                                                    selected_tool_name)
                         print(f"\n[Tool Used: {selected_tool_name}]")
                     else:
-                        response = self._handle_general_chat(user_query)
+                        response = self._handle_general_chat(user_query);
                         print(f"\n[Tool execution failed, switching to general chat]")
 
         print(f"Answer: {response}")
 
+
+# --- main_async and main functions are the same ---
 async def main_async():
     config = AppConfig()
     parser = argparse.ArgumentParser(description='Final Hybrid Dynamic MCP Client')
@@ -373,11 +319,9 @@ async def main_async():
                         default=config.default_n_gpu_layers)
     parser.add_argument("-q", "--query", type=str, help="User query to process", default=None)
     args = parser.parse_args()
-
     print("======================================================")
     print("  MCP Client - Hybrid Dynamic Tool Selection (Final Version)")
     print("======================================================")
-
     router = ToolRouter(config, args)
     user_input = args.query or input("\nEnter your question: ")
     try:
@@ -394,7 +338,6 @@ def main():
         print("\nExecution interrupted by user.")
     except Exception as e:
         print(f"An error occurred during program execution: {e}")
-
 
 if __name__ == "__main__":
     main()
