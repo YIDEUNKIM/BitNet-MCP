@@ -96,6 +96,24 @@ Your Analysis:
 Your Analysis:
 1.  **Variables & Numbers:**"""
 
+SYNTHESIZE_ANSWER_PROMPT = """[System]
+You are a helpful assistant who provides direct and clear answers.
+Your task is to present the final answer to the user based on the provided information.
+
+Follow this two-sentence format PRECISELY:
+1. The final answer is [result].
+2. This was calculated using the expression: [expression].
+
+Do not add greetings, sign-offs, or any other text.
+
+[Information]
+- User's Question: {query}
+- Math Expression Used: {expression}
+- Final Result: {result}
+
+[Final Answer]
+"""
+
 # --- 2. Configuration ---
 @dataclass
 class AppConfig:
