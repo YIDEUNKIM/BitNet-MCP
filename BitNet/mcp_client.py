@@ -11,6 +11,20 @@ from typing import List, Dict, Any, Optional
 from fastmcp import Client
 from fastmcp.exceptions import ClientError, ToolError, NotFoundError
 
+"""
+workflow
+:  1. 요청 분석: 사용자의 질문을 받으면, 먼저 mcp_server에 어떤 전문가(Tool)들이 있는지 확인합니다.
+   2. 전문가 선택: 언어 모델(SLM)에게 질문을 보여주고, 이 일을 처리할 최적의 전문가(Tool)를 단 한 명
+      고름.
+   3. 정보 준비:
+       * 빠른 처리: 만약 전문가가 필요한 정보(Parameter)가 간단한 수학식처럼 규칙(Regex)으로 바로
+         뽑을 수 있는 것이면, 즉시 추출.
+       * 심층 분석: 규칙으로 안 되면, 언어 모델(SLM)에게 다시 요청하여 질문에서 복잡한 정보를 JSON
+         형태로 뽑아냄.
+   4. 업무 지시 및 보고: 준비된 정보를 전문가에게 전달하여 일을 처리시키고, 그 결과를 받아 사람이
+      이해하기 쉬운 자연스러운 문장으로 바꿔 최종 보고.
+"""
+
 
 # --- AppConfig, get_llama_cli_path, and query_local_slm are the same ---
 @dataclass

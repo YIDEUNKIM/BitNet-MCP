@@ -1,12 +1,12 @@
 """
-python mcp_client_math.py
+python mcp_client_math_optimal.py
+gsm8k
 ────────────────────────────────────────────────────────
 Math Agent (Structured Template-based)
 
-사용자 쿼리 -> 쿼리 분석 -> 쿼리를 수식으로 변환 ->
-수식을 mcp_server에 파싱 -> mcp_server에서 연산 결과 반환 ->
-최종 결과에 반영
-
+Forces a model to follow a strict template to deconstruct
+a word problem, extract a final expression, execute it,
+and synthesize a clear answer.
 ────────────────────────────────────────────────────────
 ❱❱ Dependencies
 pip install fastmcp rich
@@ -98,9 +98,9 @@ Your Analysis:
 1.  **Variables & Numbers:**"""
 
 SYNTHESIZE_ANSWER_PROMPT = """[System]
-You are a helpful assistant who provides the final answer in a specific format.
+You are a helpful assistant who provides the final answer in a specific format for loose EM evaluation.
 Output ONLY the final answer in the format: #### [result]
-Do not include any reasoning, explanations, or other text. Follow the examples exactly.
+Do not include any reasoning, explanations, or other text. Follow the examples exactly and always use this format.
 
 Here are examples:
 
@@ -297,13 +297,12 @@ class MathAgent:
         if final_answer == "SLM_CALL_FAILED":
             return f"I was unable to generate a final explanation, but the calculated result is: {result}"
 
-        # Improved cleaning: Remove any unwanted tokens and duplicates
-        final_answer = re.sub(r"<\|im_end\|>|<\|im_sep\|>|<\|.*\|>", "", final_answer)
-        final_answer = final_answer.replace("1. ", "").replace("2. ", "\n")
-        # Take only the first instance of the answer to avoid repetition
-        lines = final_answer.split('\n')
-        if len(lines) > 2:
-            final_answer = '\n'.join(lines[:2])
+        # Improved cleaning for loose EM: Extract only "#### [number]" part
+        match = re.search(r'####\s*(\d+\.?\d*)', final_answer, re.IGNORECASE)
+        if match:
+            final_answer = f"#### {match.group(1)}"
+        else:
+            final_answer = f"#### {result}"  # Fallback to forced format if extraction fails
 
         elapsed = time.time() - start_time
         print(f"  - Step 3 took {elapsed:.2f} seconds")
