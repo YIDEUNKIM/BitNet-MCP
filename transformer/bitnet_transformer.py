@@ -78,7 +78,7 @@ model = AutoModelForCausalLM.from_pretrained(
 # 프롬프트 준비
 messages = [
     {"role": "system", "content": "You are a helpful AI assistant."},
-    {"role": "user", "content": "How are you?"},
+    {"role": "user", "content": "A robe takes 2 bolts of blue fiber and half that much white fiber. How many bolts in total does it take?"},
 ]
 prompt = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
 chat_input = tokenizer(prompt, return_tensors="pt").to(model.device)
@@ -87,7 +87,7 @@ chat_input = tokenizer(prompt, return_tensors="pt").to(model.device)
 # 추론 및 리소스 측정 함수 호출
 # ----------------------------
 print("\n🚀 추론 단계의 리소스 사용량 측정을 시작합니다...")
-chat_outputs = measure_and_print_inference_usage(model, chat_input, max_new_tokens=50)
+chat_outputs = measure_and_print_inference_usage(model, chat_input, max_new_tokens=512)
 
 
 # 결과 디코딩 및 출력
